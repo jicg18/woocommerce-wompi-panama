@@ -433,9 +433,17 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
             exit;
         }
 
-        // Verificar firma usando el header X-Event-Checksum
+        // Verificar firma — rechazar si events_key no está configurada (fail-closed)
         $events_key = $this->get_events_key();
-        if ( $events_key && ! $this->verify_webhook_signature( $body ) ) {
+        if ( ! $events_key ) {
+            error_log( 'Wompi Panama: webhook rechazado — events_key no configurada.' );
+            http_response_code( 401 );
+            header( 'Content-Type: application/json' );
+            echo wp_json_encode( [ 'error' => 'events_key no configurada' ] );
+            exit;
+        }
+
+        if ( ! $this->verify_webhook_signature( $body ) ) {
             http_response_code( 401 );
             header( 'Content-Type: application/json' );
             echo wp_json_encode( [ 'error' => 'firma inválida' ] );
@@ -463,7 +471,7 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
     private function verify_webhook_signature( string $raw_body ): bool {
         $events_key = $this->get_events_key();
         if ( ! $events_key ) {
-            return true;
+            return false;
         }
 
         $payload = json_decode( $raw_body, true );
