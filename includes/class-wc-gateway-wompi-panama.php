@@ -306,8 +306,8 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
         // Monto en centavos
         $amount_in_cents = (int) round( $order->get_total() * 100 );
 
-        // Expiración: 45 minutos
-        $expiration = gmdate( 'Y-m-d\TH:i:s.000\Z', time() + 45 * 60 );
+        // Expiración: 7 minutos
+        $expiration = gmdate( 'Y-m-d\TH:i:s.000\Z', time() + 7 * 60 );
 
         // URL de redirección — debe ser nuestro propio dominio según la documentación oficial
         // Wompi agrega ?id=TX_ID al final para que podamos consultar el resultado
