@@ -3,8 +3,8 @@
  * Plugin Name: Wompi Panamá para WooCommerce
  * Plugin URI:  https://docs.wompi.co/docs/panama/
  * Description: Pasarela de pago Wompi Panamá para WooCommerce. Compatible con Block Checkout. Acepta Visa, Mastercard y Clave.
- * Version:     1.0.0
- * Author:      Tu Nombre
+ * Version:     1.5.0
+ * Author:      Jose Calvo
  * Author URI:  https://tudominio.com
  * License:     GPL-2.0+
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
