@@ -25,7 +25,7 @@ define( 'WOMPI_PA_PLUGIN_URL',  plugin_dir_url( __FILE__ ) );
 
 // ── Compatibilidad con HPOS y Blocks de WooCommerce ─────────────────────
 add_action( 'before_woocommerce_init', function () {
-    if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
+    if ( class_exists( '\\Automattic\\WooCommerce\\Utilities\\FeaturesUtil' ) ) {
         \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true );
         \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'cart_checkout_blocks', __FILE__, true );
     }
@@ -34,6 +34,9 @@ add_action( 'before_woocommerce_init', function () {
 // ── Inicializar plugin ───────────────────────────────────────────────────
 add_action( 'plugins_loaded', 'wompi_pa_init' );
 
+/**
+ * Inicializa el plugin una vez que WordPress y WooCommerce están listos.
+ */
 function wompi_pa_init() {
     if ( ! class_exists( 'WC_Payment_Gateway' ) ) {
         add_action( 'admin_notices', function () {
@@ -51,16 +54,103 @@ function wompi_pa_init() {
     // Registrar integración con Blocks
     add_action( 'woocommerce_blocks_loaded', 'wompi_pa_register_blocks_support' );
 
+    // Registrar webhook moderno mediante REST API
+    add_action( 'rest_api_init', 'wompi_pa_register_rest_routes' );
+
     load_plugin_textdomain( 'wompi-panama', false, dirname( plugin_basename( __FILE__ ) ) . '/languages' );
 }
 
+/**
+ * Registra la ruta REST para recibir webhooks de Wompi.
+ */
+function wompi_pa_register_rest_routes() {
+    if ( ! function_exists( 'register_rest_route' ) ) {
+        return;
+    }
+
+    register_rest_route(
+        'wompi-panama/v1',
+        '/webhook',
+        [
+            'methods'             => 'POST',
+            'callback'            => 'wompi_pa_rest_webhook',
+            'permission_callback' => '__return_true',
+        ]
+    );
+}
+
+/**
+ * Maneja el webhook recibido por REST API.
+ *
+ * @param WP_REST_Request $request Solicitud entrante.
+ *
+ * @return WP_Error|WP_REST_Response
+ */
+function wompi_pa_rest_webhook( $request ) {
+    $gateway = wompi_pa_get_gateway_instance();
+    if ( ! $gateway ) {
+        return new WP_Error(
+            'gateway_unavailable',
+            __( 'Gateway no disponible', 'wompi-panama' ),
+            [ 'status' => 503 ]
+        );
+    }
+
+    if ( ! method_exists( $gateway, 'handle_rest_webhook' ) ) {
+        return new WP_Error(
+            'unsupported',
+            __( 'Webhook no soportado', 'wompi-panama' ),
+            [ 'status' => 501 ]
+        );
+    }
+
+    return $gateway->handle_rest_webhook( $request );
+}
+
+/**
+ * Obtiene la instancia del gateway de Wompi.
+ *
+ * @return WC_Gateway_Wompi_Panama|null
+ */
+function wompi_pa_get_gateway_instance() {
+    static $gateway = null;
+
+    if ( null !== $gateway ) {
+        return $gateway;
+    }
+
+    if ( function_exists( 'WC' ) && method_exists( WC(), 'payment_gateways' ) ) {
+        $payment_gateways = WC()->payment_gateways()->payment_gateways();
+        $gateway          = $payment_gateways['wompi_panama'] ?? null;
+        if ( $gateway ) {
+            return $gateway;
+        }
+    }
+
+    if ( class_exists( 'WC_Gateway_Wompi_Panama' ) ) {
+        $gateway = new WC_Gateway_Wompi_Panama();
+    }
+
+    return $gateway;
+}
+
+/**
+ * Registra el gateway clásico de WooCommerce.
+ *
+ * @param array $gateways Gateways existentes.
+ *
+ * @return array
+ */
 function wompi_pa_add_gateway( $gateways ) {
     $gateways[] = 'WC_Gateway_Wompi_Panama';
     return $gateways;
 }
 
+/**
+ * Registra la integración con WooCommerce Blocks.
+ */
 function wompi_pa_register_blocks_support() {
-    if ( class_exists( 'Automattic\WooCommerce\Blocks\Payments\Integrations\AbstractPaymentMethodType' ) ) {
+    if ( class_exists( 'Automattic\WooCommerce\Blocks\Payments\Integrations\AbstractPaymentMethodType' ) && class_exists( 'WC_Wompi_Panama_Blocks_Support' ) ) {
         add_action( 'woocommerce_blocks_payment_method_type_registration', function ( $registry ) {
             $registry->register( new WC_Wompi_Panama_Blocks_Support() );
         } );

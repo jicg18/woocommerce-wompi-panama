@@ -4,12 +4,17 @@
 ( function () {
     'use strict';
 
-    const { registerPaymentMethod } = window.wc.wcBlocksRegistry;
-    const { getSetting }            = window.wc.wcSettings;
+    const registry = window.wc && window.wc.wcBlocksRegistry;
+    const getSetting = window.wc && window.wc.wcSettings && window.wc.wcSettings.getSetting;
     const { createElement, useEffect } = window.wp.element;
     const { __ }                    = window.wp.i18n;
     const { decodeEntities }        = window.wp.htmlEntities;
 
+    if ( ! registry || ! registry.registerPaymentMethod || typeof getSetting !== 'function' ) {
+        return;
+    }
+
+    const { registerPaymentMethod } = registry;
     const settings = getSetting( 'wompi_panama_data', {} );
 
     const defaultTitle       = __( 'Paga con Wompi (Visa, Mastercard, Clave)', 'wompi-panama' );

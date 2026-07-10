@@ -423,31 +423,43 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
             ob_end_clean();
         }
 
-        $body    = file_get_contents( 'php://input' );
+        $result = $this->process_webhook_payload( file_get_contents( 'php://input' ) );
+
+        if ( is_wp_error( $result ) ) {
+            $status = $result->get_error_data()['status'] ?? 400;
+            wp_send_json_error( [ 'error' => $result->get_error_message() ], $status );
+        }
+
+        wp_send_json_success( $result );
+    }
+
+    public function handle_rest_webhook( $request ) {
+        $body   = method_exists( $request, 'get_body' ) ? $request->get_body() : '';
+        $result = $this->process_webhook_payload( $body );
+
+        if ( is_wp_error( $result ) ) {
+            return $result;
+        }
+
+        return rest_ensure_response( $result );
+    }
+
+    private function process_webhook_payload( string $body ) {
         $payload = json_decode( $body, true );
 
         if ( empty( $payload ) || ! is_array( $payload ) ) {
-            http_response_code( 400 );
-            header( 'Content-Type: application/json' );
-            echo wp_json_encode( [ 'error' => 'payload vacío' ] );
-            exit;
+            return new WP_Error( 'invalid_payload', __( 'Payload vacío', 'wompi-panama' ), [ 'status' => 400 ] );
         }
 
         // Verificar firma — rechazar si events_key no está configurada (fail-closed)
         $events_key = $this->get_events_key();
         if ( ! $events_key ) {
             error_log( 'Wompi Panama: webhook rechazado — events_key no configurada.' );
-            http_response_code( 401 );
-            header( 'Content-Type: application/json' );
-            echo wp_json_encode( [ 'error' => 'events_key no configurada' ] );
-            exit;
+            return new WP_Error( 'missing_events_key', __( 'events_key no configurada', 'wompi-panama' ), [ 'status' => 401 ] );
         }
 
         if ( ! $this->verify_webhook_signature( $body ) ) {
-            http_response_code( 401 );
-            header( 'Content-Type: application/json' );
-            echo wp_json_encode( [ 'error' => 'firma inválida' ] );
-            exit;
+            return new WP_Error( 'invalid_signature', __( 'Firma inválida', 'wompi-panama' ), [ 'status' => 401 ] );
         }
 
         $event = $payload['event'] ?? '';
@@ -455,10 +467,7 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
             $this->process_transaction_event( $payload['data']['transaction'] ?? [] );
         }
 
-        http_response_code( 200 );
-        header( 'Content-Type: application/json' );
-        echo wp_json_encode( [ 'status' => 'ok' ] );
-        exit;
+        return [ 'status' => 'ok' ];
     }
 
     /**
@@ -486,7 +495,7 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
         // Obtener checksum — del body JSON (más confiable) o del header como fallback
         $checksum = $signature['checksum'] ?? '';
         if ( empty( $checksum ) ) {
-            $checksum = $_SERVER['HTTP_X_EVENT_CHECKSUM'] ?? '';
+            $checksum = isset( $_SERVER['HTTP_X_EVENT_CHECKSUM'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_EVENT_CHECKSUM'] ) ) : '';
         }
 
         if ( empty( $checksum ) ) {
@@ -508,7 +517,7 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
         $parts = explode( '.', $key );
         $value = $array;
         foreach ( $parts as $part ) {
-            if ( ! array_key_exists( $part, $value ) ) {
+            if ( ! is_array( $value ) || ! array_key_exists( $part, $value ) ) {
                 return '';
             }
             $value = $value[ $part ];
@@ -578,7 +587,21 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
             return null;
         }
 
-        $body = json_decode( wp_remote_retrieve_body( $response ), true );
+        $response_code = wp_remote_retrieve_response_code( $response );
+        if ( 200 !== $response_code ) {
+            return null;
+        }
+
+        $body = wp_remote_retrieve_body( $response );
+        if ( ! $body ) {
+            return null;
+        }
+
+        $body = json_decode( $body, true );
+        if ( ! is_array( $body ) ) {
+            return null;
+        }
+
         return $body['data'] ?? null;
     }
 

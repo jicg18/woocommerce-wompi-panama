@@ -24,8 +24,13 @@ class WC_Wompi_Panama_Blocks_Support extends AbstractPaymentMethodType {
     public function initialize() {
         $this->settings = get_option( 'woocommerce_wompi_panama_settings', [] );
 
-        $gateways      = WC()->payment_gateways()->payment_gateways();
-        $this->gateway = $gateways['wompi_panama'] ?? null;
+        if ( ! function_exists( 'WC' ) || ! method_exists( WC(), 'payment_gateways' ) ) {
+            $this->gateway = null;
+            return;
+        }
+
+        $payment_gateways = WC()->payment_gateways()->payment_gateways();
+        $this->gateway    = $payment_gateways['wompi_panama'] ?? null;
     }
 
     // ── ¿Está activo? ────────────────────────────────────────────────────

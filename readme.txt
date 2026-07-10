@@ -57,6 +57,8 @@ Desde comercios.wompi.pa → Desarrolladores → Secretos para integración:
 * Producción: https://api.wompi.pa/v1
 * Sandbox: https://api-sandbox.wompi.pa/v1
 * Widget JS: https://checkout.wompi.pa/widget.js
+* REST Webhook: `https://tudominio.com/wp-json/wompi-panama/v1/webhook`
+* Webhook legado: `https://tudominio.com/?wc-api=wompi_panama`
 
 == Estados de transacción ==
 
