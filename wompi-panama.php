@@ -23,7 +23,22 @@ define( 'WOMPI_PA_PLUGIN_FILE', __FILE__ );
 define( 'WOMPI_PA_PLUGIN_DIR',  plugin_dir_path( __FILE__ ) );
 define( 'WOMPI_PA_PLUGIN_URL',  plugin_dir_url( __FILE__ ) );
 
-// ── Compatibi class_exists( 'WC_Payment_Gateway' ) ) {
+// ── Compatibilidad con HPOS y Blocks de WooCommerce ─────────────────────
+add_action( 'before_woocommerce_init', function () {
+    if ( class_exists( '\Automattic\WooCommerce\Utilities\FeaturesUtil' ) ) {
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true );
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'cart_checkout_blocks', __FILE__, true );
+    }
+} );
+
+// ── Inicializar plugin ───────────────────────────────────────────────────
+add_action( 'plugins_loaded', 'wompi_pa_init' );
+
+/**
+ * Inicializa el plugin una vez que WordPress y WooCommerce están listos.
+ */
+function wompi_pa_init() {
+    if ( ! class_exists( 'WC_Payment_Gateway' ) ) {
         add_action( 'admin_notices', function () {
             echo '<div class="error"><p><strong>Wompi Panamá</strong> requiere WooCommerce instalado y activo.</p></div>';
         } );
@@ -33,19 +48,21 @@ define( 'WOMPI_PA_PLUGIN_URL',  plugin_dir_url( __FILE__ ) );
     require_once WOMPI_PA_PLUGIN_DIR . 'includes/class-wc-gateway-wompi-panama.php';
     require_once WOMPI_PA_PLUGIN_DIR . 'includes/class-wompi-blocks-support.php';
 
-    // Registrar pasarela clásica
     add_filter( 'woocommerce_payment_gateways', 'wompi_pa_add_gateway' );
-
-    // Registrar integración con Blocks
     add_action( 'woocommerce_blocks_loaded', 'wompi_pa_register_blocks_support' );
-
-    // Registrar webhook moderno mediante REST API
     add_action( 'rest_api_init', 'wompi_pa_register_rest_routes' );
 
     load_plugin_textdomain( 'wompi-panama', false, dirname( plugin_basename( __FILE__ ) ) . '/languages' );
 }
 
+/**
+ * Registra la ruta REST para recibir webhooks de Wompi.
+ */
 function wompi_pa_register_rest_routes() {
+    if ( ! function_exists( 'register_rest_route' ) ) {
+        return;
+    }
+
     register_rest_route(
         'wompi-panama/v1',
         '/webhook',
@@ -57,6 +74,13 @@ function wompi_pa_register_rest_routes() {
     );
 }
 
+/**
+ * Maneja el webhook recibido por REST API.
+ *
+ * @param WP_REST_Request $request Solicitud entrante.
+ *
+ * @return WP_Error|WP_REST_Response
+ */
 function wompi_pa_rest_webhook( $request ) {
     $gateway = wompi_pa_get_gateway_instance();
     if ( ! $gateway ) {
@@ -78,6 +102,11 @@ function wompi_pa_rest_webhook( $request ) {
     return $gateway->handle_rest_webhook( $request );
 }
 
+/**
+ * Obtiene la instancia del gateway de Wompi.
+ *
+ * @return WC_Gateway_Wompi_Panama|null
+ */
 function wompi_pa_get_gateway_instance() {
     static $gateway = null;
 
@@ -100,16 +129,29 @@ function wompi_pa_get_gateway_instance() {
     return $gateway;
 }
 
+/**
+ * Registra el gateway clásico de WooCommerce.
+ *
+ * @param array $gateways Gateways existentes.
+ *
+ * @return array
+ */
 function wompi_pa_add_gateway( $gateways ) {
     $gateways[] = 'WC_Gateway_Wompi_Panama';
     return $gateways;
 }
 
+/**
+ * Registra la integración con WooCommerce Blocks.
+ */
 function wompi_pa_register_blocks_support() {
-    if ( class_exists( 'Automattic\WooCommerce\Blocks\Payments\Integrations\AbstractPaymentMethodType' ) ) {
-        add_action( 'woocommerce_blocks_payment_method_type_registration', function ( $registry ) {
-            $registry->register( new WC_Wompi_Panama_Blocks_Support() );
-        } );
+    if ( class_exists( 'Automattic\WooCommerce\Blocks\Payments\Integrations\AbstractPaymentMethodType' ) && class_exists( 'WC_Wompi_Panama_Blocks_Support' ) ) {
+        add_action(
+            'woocommerce_blocks_payment_method_type_registration',
+            function ( $registry ) {
+                $registry->register( new WC_Wompi_Panama_Blocks_Support() );
+            }
+        );
     }
 }
 
@@ -119,16 +161,3 @@ add_filter( 'plugin_action_links_' . plugin_basename( __FILE__ ), function ( $li
     $links[] = '<a href="' . esc_url( $url ) . '">Configuración</a>';
     return $links;
 } );
-lidad con HPOS y Blocks de WooCommerce ─────────────────────
-add_action( 'before_woocommerce_init', function () {
-    if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
-        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true );
-        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'cart_checkout_blocks', __FILE__, true );
-    }
-} );
-
-// ── Inicializar plugin ───────────────────────────────────────────────────
-add_action( 'plugins_loaded', 'wompi_pa_init' );
-
-function wompi_pa_init() {
-    if ( !
