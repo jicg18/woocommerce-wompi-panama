@@ -18,7 +18,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WOMPI_PA_VERSION',     '1.0.0' );
+define( 'WOMPI_PA_VERSION',     '1.5.0' );
 define( 'WOMPI_PA_PLUGIN_FILE', __FILE__ );
 define( 'WOMPI_PA_PLUGIN_DIR',  plugin_dir_path( __FILE__ ) );
 define( 'WOMPI_PA_PLUGIN_URL',  plugin_dir_url( __FILE__ ) );
@@ -34,6 +34,11 @@ add_action( 'before_woocommerce_init', function () {
 // ── Inicializar plugin ───────────────────────────────────────────────────
 add_action( 'plugins_loaded', 'wompi_pa_init' );
 
+// Se registra fuera de plugins_loaded: WooCommerce dispara este hook dentro de
+// plugins_loaded (prioridad 10), así que registrarlo desde wompi_pa_init haría
+// que dependa del orden alfabético de carga de los plugins.
+add_action( 'woocommerce_blocks_loaded', 'wompi_pa_register_blocks_support' );
+
 /**
  * Inicializa el plugin una vez que WordPress y WooCommerce están listos.
  */
@@ -46,10 +51,8 @@ function wompi_pa_init() {
     }
 
     require_once WOMPI_PA_PLUGIN_DIR . 'includes/class-wc-gateway-wompi-panama.php';
-    require_once WOMPI_PA_PLUGIN_DIR . 'includes/class-wompi-blocks-support.php';
 
     add_filter( 'woocommerce_payment_gateways', 'wompi_pa_add_gateway' );
-    add_action( 'woocommerce_blocks_loaded', 'wompi_pa_register_blocks_support' );
     add_action( 'rest_api_init', 'wompi_pa_register_rest_routes' );
 
     load_plugin_textdomain( 'wompi-panama', false, dirname( plugin_basename( __FILE__ ) ) . '/languages' );
@@ -145,7 +148,8 @@ function wompi_pa_add_gateway( $gateways ) {
  * Registra la integración con WooCommerce Blocks.
  */
 function wompi_pa_register_blocks_support() {
-    if ( class_exists( 'Automattic\WooCommerce\Blocks\Payments\Integrations\AbstractPaymentMethodType' ) && class_exists( 'WC_Wompi_Panama_Blocks_Support' ) ) {
+    if ( class_exists( 'Automattic\WooCommerce\Blocks\Payments\Integrations\AbstractPaymentMethodType' ) ) {
+        require_once WOMPI_PA_PLUGIN_DIR . 'includes/class-wompi-blocks-support.php';
         add_action(
             'woocommerce_blocks_payment_method_type_registration',
             function ( $registry ) {
