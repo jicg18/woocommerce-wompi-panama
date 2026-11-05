@@ -299,9 +299,41 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
             return [ 'result' => 'failure' ];
         }
 
+        $this->prepare_payment_data( $order );
+        $order->update_status( 'pending', __( 'Esperando confirmación de pago Wompi.', 'wompi-panama' ) );
+        $order->save();
+
+        // No vaciamos el carrito aquí — lo hacemos solo cuando el pago es APPROVED
+        // Así el cliente puede volver al checkout si cancela o hay un error
+
+        // Widget: página intermedia con el popup de Wompi
+        // Checkout Web: página con formulario HTML que envía a Wompi
+        return [
+            'result'   => 'success',
+            'redirect' => add_query_arg(
+                [
+                    'wompi_pay'   => $order_id,
+                    'wompi_nonce' => wp_create_nonce( 'wompi_pa_pay_' . $order_id ),
+                ],
+                home_url( '/' )
+            ),
+        ];
+    }
+
+    /**
+     * Genera referencia, expiración y firma de integridad para un intento de pago
+     * y las guarda en el meta del pedido (sin llamar a save()).
+     *
+     * Cada referencia generada se guarda también en `_wompi_reference_history`
+     * para poder asociar eventos tardíos de intentos anteriores al pedido.
+     */
+    private function prepare_payment_data( WC_Order $order ) {
+        $order_id = $order->get_id();
+
         // Referencia única — solo alfanumérica y guiones, sin caracteres especiales
         $reference = 'WC-' . $order_id . '-' . strtoupper( substr( md5( uniqid( '', true ) ), 0, 8 ) );
         $order->update_meta_data( '_wompi_reference', $reference );
+        $order->add_meta_data( '_wompi_reference_history', $reference );
 
         // Monto en centavos
         $amount_in_cents = (int) round( $order->get_total() * 100 );
@@ -330,24 +362,14 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
         $order->update_meta_data( '_wompi_signature',       $signature );
         $order->update_meta_data( '_wompi_redirect_url',    $redirect_url );
         $order->update_meta_data( '_wompi_sig_string',      $sig_data['string'] );
-        $order->update_status( 'pending', __( 'Esperando confirmación de pago Wompi.', 'wompi-panama' ) );
-        $order->save();
+    }
 
-        // No vaciamos el carrito aquí — lo hacemos solo cuando el pago es APPROVED
-        // Así el cliente puede volver al checkout si cancela o hay un error
-
-        // Widget: página intermedia con el popup de Wompi
-        // Checkout Web: página con formulario HTML que envía a Wompi
-        return [
-            'result'   => 'success',
-            'redirect' => add_query_arg(
-                [
-                    'wompi_pay'   => $order_id,
-                    'wompi_nonce' => wp_create_nonce( 'wompi_pa_pay_' . $order_id ),
-                ],
-                home_url( '/' )
-            ),
-        ];
+    /**
+     * Indica si la firma guardada en el pedido ya venció (o vence en menos de 1 minuto).
+     */
+    private function payment_data_expired( WC_Order $order ): bool {
+        $expiration = strtotime( (string) $order->get_meta( '_wompi_expiration' ) );
+        return ! $expiration || $expiration - time() < 60;
     }
 
     // ── Página intermedia del Widget / Checkout Web ──────────────────────
@@ -361,13 +383,12 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
                 $order = wc_get_order( $order_id );
                 if ( $order ) {
                     // Si Wompi pasó el ID de transacción en la URL, consultamos el estado
-                    $tx_id = sanitize_text_field( $_GET['id'] ?? '' );
+                    $tx_id = sanitize_text_field( wp_unslash( $_GET['id'] ?? '' ) );
                     if ( $tx_id ) {
                         $tx = $this->get_transaction( $tx_id );
                         if ( $tx ) {
+                            // process_transaction_event guarda el ID y el estado en el pedido
                             $this->process_transaction_event( $tx );
-                            $order->update_meta_data( '_wompi_transaction_id', $tx_id );
-                            $order->save();
                         }
                     }
                     wp_safe_redirect( $this->get_return_url( $order ) );
@@ -393,6 +414,19 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
         if ( ! $order ) {
             wp_safe_redirect( home_url() );
             exit;
+        }
+
+        // Si el pedido ya fue pagado, no mostrar de nuevo la página de pago
+        if ( $order->is_paid() ) {
+            wp_safe_redirect( $this->get_return_url( $order ) );
+            exit;
+        }
+
+        // Si la firma venció (expira a los 7 minutos), generar un intento nuevo
+        // para que el widget no falle al recargar o volver más tarde a la página
+        if ( $this->payment_data_expired( $order ) ) {
+            $this->prepare_payment_data( $order );
+            $order->save();
         }
 
         // Recuperar datos guardados en meta
@@ -534,28 +568,42 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
             return;
         }
 
-        $orders = wc_get_orders( [
-            'meta_key'   => '_wompi_reference',
-            'meta_value' => $reference,
-            'limit'      => 1,
-        ] );
-
-        if ( empty( $orders ) ) {
+        $order = $this->find_order_by_reference( $reference );
+        if ( ! $order ) {
             return;
         }
 
-        /** @var WC_Order $order */
-        $order = $orders[0];
+        // Idempotencia: el retorno del cliente y el webhook pueden informar
+        // la misma transacción con el mismo estado — procesarla una sola vez
+        if ( $tx_id
+            && $order->get_meta( '_wompi_transaction_id' ) === $tx_id
+            && $order->get_meta( '_wompi_transaction_status' ) === $status ) {
+            return;
+        }
+
+        // Un pedido ya pagado no debe pasar a fallido por un evento tardío de
+        // un intento anterior (p. ej. tarjeta rechazada y luego aprobada)
+        if ( $order->is_paid() && in_array( $status, [ 'APPROVED', 'DECLINED', 'ERROR', 'PENDING' ], true ) ) {
+            if ( 'APPROVED' !== $status ) {
+                $order->add_order_note( sprintf(
+                    /* translators: 1: estado, 2: ID de transacción */
+                    __( 'Wompi informó el estado %1$s para la transacción %2$s, pero el pedido ya está pagado. Se ignora.', 'wompi-panama' ),
+                    $status,
+                    $tx_id
+                ) );
+            }
+            return;
+        }
 
         $order->update_meta_data( '_wompi_transaction_id',     $tx_id );
         $order->update_meta_data( '_wompi_transaction_status', $status );
 
         switch ( $status ) {
             case 'APPROVED':
-                $order->payment_complete( $tx_id );
                 $order->add_order_note( sprintf( __( '✅ Pago aprobado por Wompi. ID de transacción: %s', 'wompi-panama' ), $tx_id ) );
+                $order->payment_complete( $tx_id );
                 // Vaciar el carrito solo cuando el pago es confirmado
-                if ( WC()->cart ) {
+                if ( function_exists( 'WC' ) && WC()->cart ) {
                     WC()->cart->empty_cart();
                 }
                 break;
@@ -573,9 +621,46 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
         $order->save();
     }
 
+    /**
+     * Busca el pedido asociado a una referencia de Wompi.
+     *
+     * Primero por la referencia vigente; si no aparece (evento de un intento
+     * anterior), por el historial de referencias del pedido indicado en la
+     * propia referencia (formato WC-{order_id}-{random}).
+     */
+    private function find_order_by_reference( string $reference ): ?WC_Order {
+        $orders = wc_get_orders( [
+            'meta_key'   => '_wompi_reference',
+            'meta_value' => $reference,
+            'limit'      => 1,
+        ] );
+
+        if ( ! empty( $orders ) ) {
+            return $orders[0];
+        }
+
+        if ( ! preg_match( '/^WC-(\d+)-[A-F0-9]+$/', $reference, $m ) ) {
+            return null;
+        }
+
+        $order = wc_get_order( (int) $m[1] );
+        if ( ! $order ) {
+            return null;
+        }
+
+        $history = array_map(
+            function ( $meta ) {
+                return $meta->value;
+            },
+            $order->get_meta( '_wompi_reference_history', false )
+        );
+
+        return in_array( $reference, $history, true ) ? $order : null;
+    }
+
     // ── Consultar transacción en la API ──────────────────────────────────
     public function get_transaction( string $tx_id ): ?array {
-        $response = wp_remote_get( $this->get_api_url() . '/transactions/' . $tx_id, [
+        $response = wp_remote_get( $this->get_api_url() . '/transactions/' . rawurlencode( $tx_id ), [
             'headers' => [
                 'Authorization' => 'Bearer ' . $this->get_prv_key(),
                 'Content-Type'  => 'application/json',
@@ -607,17 +692,14 @@ class WC_Gateway_Wompi_Panama extends WC_Payment_Gateway {
 
     // ── Datos públicos para el bloque JS ─────────────────────────────────
     /**
-     * Retorna los datos necesarios para que el bloque JS pueda
-     * mostrar información y solicitar al servidor la firma de integridad.
+     * Retorna los datos que el bloque JS necesita para mostrar el método de pago.
      */
     public function get_payment_method_data(): array {
         return [
             'title'       => $this->title,
             'description' => $this->description,
             'sandbox'     => $this->sandbox,
-            'logo_url'    => WOMPI_PA_PLUGIN_URL . 'assets/img/wompi-logo.png',
-            'nonce'       => wp_create_nonce( 'wompi_pa_block_data' ),
-            'ajax_url'    => admin_url( 'admin-ajax.php' ),
+            'logo_url'    => WOMPI_PA_PLUGIN_URL . 'assets/img/wompi-logo.svg',
         ];
     }
 }
